@@ -356,6 +356,24 @@
   requestAnimationFrame(draw);
 
   // ---------- Speech ----------
+  // ---------- Mute ----------
+  const muteBtn = $("muteBtn");
+  let muted = false;
+  try { muted = localStorage.getItem("ecat-muted") === "1"; } catch (e) {}
+  function applyMute() {
+    muteBtn.classList.toggle("muted", muted);
+    muteBtn.setAttribute("aria-pressed", String(muted));
+    muteBtn.setAttribute("aria-label", muted ? "Unmute voice" : "Mute voice");
+    hintEl.style.visibility = muted ? "hidden" : "";
+  }
+  muteBtn.addEventListener("click", () => {
+    muted = !muted;
+    try { localStorage.setItem("ecat-muted", muted ? "1" : "0"); } catch (e) {}
+    if (muted && "speechSynthesis" in window) speechSynthesis.cancel();
+    applyMute();
+  });
+  applyMute();
+
   // Pick the most natural-sounding English voice the phone has.
   // iPhones ship "compact" voices (robotic); "Enhanced"/"Premium" ones sound human
   // and can be downloaded in Settings > Accessibility > Spoken Content > Voices.

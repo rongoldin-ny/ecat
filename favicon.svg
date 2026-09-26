@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+<defs><radialGradient id="g" cx="50%" cy="55%" r="55%"><stop offset="0" stop-color="#ff4fa3" stop-opacity=".35"/><stop offset="1" stop-color="#000" stop-opacity="0"/></radialGradient></defs>
+<rect width="100" height="100" fill="#000"/><rect width="100" height="100" fill="url(#g)"/>
+<g transform="translate(14 16) scale(.72)">
+      <!-- cat head -->
+      <path d="M18 30 L24 6 L42 22 Q50 20 58 22 L76 6 L82 30 Q90 42 88 58 Q84 86 50 90 Q16 86 12 58 Q10 42 18 30 Z"
+            fill="#ff4fa3"/>
+      <path d="M24 12 L28 26 L36 22 Z M76 12 L72 26 L64 22 Z" fill="#ffc2de"/>
+      <ellipse cx="36" cy="52" rx="6" ry="8" fill="#000"/>
+      <ellipse cx="64" cy="52" rx="6" ry="8" fill="#000"/>
+      <circle cx="38" cy="49" r="2" fill="#fff"/>
+      <circle cx="66" cy="49" r="2" fill="#fff"/>
+      <path d="M46 64 L54 64 L50 69 Z" fill="#000"/>
+      <path d="M50 69 Q46 76 40 73 M50 69 Q54 76 60 73" stroke="#000" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+      <path d="M30 66 L6 62 M30 70 L6 72 M70 66 L94 62 M70 70 L94 72" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+    </g>
+</svg>

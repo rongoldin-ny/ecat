@@ -2,6 +2,13 @@
 
 Each push to `main` gets a new version (v0.1, v0.2, …). The version is shown in the bottom-right corner of the app, and each release has a matching git tag.
 
+## v0.5
+- Fixes v0.4 barely picking up meows. v0.4 cut out the low frequencies before checking for sound at all, which removed most of a real voice's energy. Now the full signal is used to detect that you're making a sound, and the filtered signal (with a gentler filter) is used only to find the dips between meows.
+- The mic is now measured directly in the audio stream every ~5ms, not on each screen refresh. Before, the same meows could count differently from one try to the next, especially with Low Power Mode on.
+- Detector settings tuned on 11 test clips, including quieter, lower-pitched voice-like ones. The results stay the same when the timing of the audio shifts slightly.
+- Normal meows always read "Meow" (no more "Mew"). Long meows still stretch ("Meooow").
+- `?debug` shows both levels: `rms` (full signal) and `dip` (lows cut).
+
 ## v0.4
 - The translations are now what the person is saying *to* their cat, like "Hey cat." or "Can I get you a fish?". There are 1,320 new phrases.
 - Better at catching the pause between meows. Low frequencies are filtered out before measuring, so the humming "m" at the start of each meow shows up as a clear dip.

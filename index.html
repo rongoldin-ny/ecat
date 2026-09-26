@@ -141,7 +141,7 @@
     <g class="off"><path d="m16 9 6 6"/><path d="m22 9-6 6"/></g>
   </svg>
 </button>
-<div id="version">v0.4</div>
+<div id="version">v0.5</div>
 
 <script src="phrases.js"></script>
 <script>
@@ -170,7 +170,6 @@
 
   // A word for each detected burst, stretched to match how long it lasted
   function meowWord(ms) {
-    if (ms < 160) return "Mew";
     if (ms < 420) return "Meow";
     const os = Math.min(8, 2 + Math.floor((ms - 420) / 180));
     return "Me" + "o".repeat(os) + "w";
@@ -192,8 +191,9 @@
   }
 
   // ---------- Audio state ----------
-  let audioCtx = null, analyser = null, stream = null, source = null;
-  let timeData = null;
+  let audioCtx = null, stream = null, source = null, proc = null, sink = null;
+  let liveRms = 0;            // latest full-signal level, for drawing the wave
+  let audioMs = 0;            // audio clock in ms (advances with each sample)
   let mode = "idle";          // idle | listening | translating | result
   let meows = [];             // durations (ms) of detected bursts
   let noiseFloor = 0.005;
@@ -206,10 +206,10 @@
   let aboveSince = 0, belowSince = 0;
   let valley = 0, prevPeak = 0, lastEnd = 0;
 
-  const ON_MS = 35;           // loud this long -> burst starts
-  const DIP_MS = 35;          // dipped this long -> burst ends
-  const DIP_RATIO = 0.5;      // dip = below 50% of the burst's peak
-  const RISE_RATIO = 1.7;     // next burst must rise this much above the dip
+  const ON_MS = 30;           // loud this long -> burst starts
+  const DIP_MS = 40;          // dipped this long -> burst ends
+  const DIP_RATIO = 0.6;      // dip = below 60% of the burst's peak
+  const RISE_RATIO = 1.5;     // next burst must rise this much above the dip
   const MIN_BURST_MS = 90;
 
   async function startMic() {
@@ -223,63 +223,101 @@
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
     });
     source = audioCtx.createMediaStreamSource(stream);
-    // The "m" between meows is a low hum that keeps overall loudness up.
-    // Cutting the lows (two stacked high-pass filters) turns each "m" into a clear dip.
-    const hp1 = audioCtx.createBiquadFilter();
-    hp1.type = "highpass"; hp1.frequency.value = 500; hp1.Q.value = 0.7;
-    const hp2 = audioCtx.createBiquadFilter();
-    hp2.type = "highpass"; hp2.frequency.value = 500; hp2.Q.value = 0.7;
-    analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 1024;  // ~21ms window: short enough to see the gaps
-    analyser.smoothingTimeConstant = 0;
-    source.connect(hp1); hp1.connect(hp2); hp2.connect(analyser);
-    timeData = new Float32Array(analyser.fftSize);
+    // Measure the mic straight from the audio stream (every ~5ms) rather than on
+    // screen refresh, so short dips between meows are never missed, even when the
+    // phone throttles animation in Low Power Mode.
+    proc = audioCtx.createScriptProcessor(1024, 1, 1);
+    proc.onaudioprocess = e => processAudio(e.inputBuffer.getChannelData(0));
+    sink = audioCtx.createGain();
+    sink.gain.value = 0;      // the processor must be connected to run; keep it silent
+    source.connect(proc); proc.connect(sink); sink.connect(audioCtx.destination);
+    setupMeter(audioCtx.sampleRate);
   }
 
   function stopMic() {
+    if (proc) { proc.onaudioprocess = null; try { proc.disconnect(); } catch (e) {} proc = null; }
+    if (sink) { try { sink.disconnect(); } catch (e) {} sink = null; }
     if (source) { try { source.disconnect(); } catch (e) {} source = null; }
     if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
-    analyser = null;
+    liveRms = 0;
   }
 
-  function readRms() {
-    if (!analyser) return 0;
-    analyser.getFloatTimeDomainData(timeData);
-    let sum = 0;
-    for (let i = 0; i < timeData.length; i++) sum += timeData[i] * timeData[i];
-    return Math.sqrt(sum / timeData.length);
+  // ---------- Level meter ----------
+  // Two levels, each over a ~53ms window, updated every ~5ms:
+  // - rms: the full signal, used to tell whether someone is making a sound
+  // - dip: lows cut (high-pass at 350Hz). The "m" at the start of each meow is a
+  //   low hum, so without the lows it shows up as a clear dip even when the
+  //   meows run together.
+  const HOP = 256, WIN_HOPS = 10;
+  let sr = 48000, hpB = [0, 0, 0], hpA = [0, 0];
+  let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+  let hopPos = 0, hopFull = 0, hopDip = 0;
+  let ringFull = [], ringDip = [];
+
+  function setupMeter(rate) {
+    sr = rate;
+    // RBJ biquad high-pass, 350Hz, Q 0.707
+    const w0 = 2 * Math.PI * 350 / sr, al = Math.sin(w0) / (2 * 0.707), c = Math.cos(w0), a0 = 1 + al;
+    hpB = [(1 + c) / 2 / a0, -(1 + c) / a0, (1 + c) / 2 / a0];
+    hpA = [-2 * c / a0, (1 - al) / a0];
+    x1 = x2 = y1 = y2 = 0;
+    hopPos = hopFull = hopDip = 0;
+    ringFull = []; ringDip = [];
+  }
+
+  function processAudio(buf) {
+    for (let i = 0; i < buf.length; i++) {
+      const x = buf[i];
+      const y = hpB[0] * x + hpB[1] * x1 + hpB[2] * x2 - hpA[0] * y1 - hpA[1] * y2;
+      x2 = x1; x1 = x; y2 = y1; y1 = y;
+      hopFull += x * x; hopDip += y * y;
+      if (++hopPos === HOP) {
+        ringFull.push(hopFull); ringDip.push(hopDip);
+        if (ringFull.length > WIN_HOPS) { ringFull.shift(); ringDip.shift(); }
+        const n = ringFull.length * HOP;
+        const rms = Math.sqrt(ringFull.reduce((a, b) => a + b, 0) / n);
+        const dip = Math.sqrt(ringDip.reduce((a, b) => a + b, 0) / n);
+        audioMs += HOP / sr * 1000;
+        liveRms = rms;
+        if (mode === "listening") detect(rms, dip, audioMs);
+        hopPos = hopFull = hopDip = 0;
+      }
+    }
   }
 
   // ---------- Burst (meow) detection ----------
-  function detect(rms, now) {
-    const startThresh = Math.max(noiseFloor * 3, 0.005);
+  // rms: full signal (is there sound?). dip: lows-cut signal (where are the gaps?)
+  let debugTick = 0;
+  function detect(rms, dip, now) {
+    const startThresh = Math.max(noiseFloor * 3, 0.004);
     if (!inBurst) {
       if (rms < startThresh) noiseFloor = noiseFloor * 0.97 + rms * 0.03;
-      valley = Math.min(valley, rms);
+      valley = Math.min(valley, dip);
       // Straight after a burst, only start a new one on a real rise out of the dip
       const recent = now - lastEnd < 400;
-      const rising = rms > valley * RISE_RATIO && rms > prevPeak * 0.3;
+      const rising = dip > valley * RISE_RATIO && dip > prevPeak * 0.3;
       if (rms > startThresh && (!recent || rising)) {
         if (!aboveSince) aboveSince = now;
         if (now - aboveSince >= ON_MS) {
-          inBurst = true; burstStart = aboveSince; burstPeak = rms; belowSince = 0;
+          inBurst = true; burstStart = aboveSince; burstPeak = dip; belowSince = 0;
           setStatus("listening…");
         }
       } else {
         aboveSince = 0;
       }
     } else {
-      burstPeak = Math.max(burstPeak, rms);
-      const dipLevel = Math.max(burstPeak * DIP_RATIO, startThresh * 0.8);
-      if (rms < dipLevel) {
+      burstPeak = Math.max(burstPeak, dip);
+      // A burst ends on a dip between meows, or when the sound stops
+      const dipped = dip < burstPeak * DIP_RATIO || rms < startThresh * 0.8;
+      if (dipped) {
         if (!belowSince) belowSince = now;
-        if (now - belowSince >= DIP_MS) endBurst(belowSince, rms, now);
+        if (now - belowSince >= DIP_MS) endBurst(belowSince, dip, now);
       } else {
         belowSince = 0;
       }
     }
-    if (DEBUG) {
-      debugEl.textContent = `rms ${rms.toFixed(3)}  floor ${noiseFloor.toFixed(3)}  peak ${burstPeak.toFixed(3)}  ${inBurst ? "BURST" : "-"}  n=${meows.length}  voice: ${debugEl.dataset.voice || "?"}`;
+    if (DEBUG && ++debugTick % 10 === 0) {
+      debugEl.textContent = `rms ${rms.toFixed(3)}  dip ${dip.toFixed(3)}  floor ${noiseFloor.toFixed(3)}  peak ${burstPeak.toFixed(3)}  ${inBurst ? "BURST" : "-"}  n=${meows.length}  voice: ${debugEl.dataset.voice || "?"}`;
     }
   }
 
@@ -321,8 +359,7 @@
     const w = canvas.width, h = canvas.height, mid = h / 2;
     ctx.clearRect(0, 0, w, h);
 
-    const rms = mode === "listening" ? readRms() : 0;
-    if (mode === "listening") detect(rms, now);
+    const rms = mode === "listening" ? liveRms : 0;
 
     // Smooth level: 0 when still, up to 1 when loud
     const target = Math.min(1, rms * 9);
@@ -462,7 +499,7 @@
     if (mode !== "listening") return;
     // Count a meow that is still in progress
     if (inBurst) {
-      const dur = performance.now() - burstStart;
+      const dur = audioMs - burstStart;
       if (dur >= MIN_BURST_MS) meows.push(dur);
       inBurst = false;
     }

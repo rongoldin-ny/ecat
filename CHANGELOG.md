@@ -2,6 +2,9 @@
 
 Each push to `main` gets a new version (v0.1, v0.2, …). The version is shown in the bottom-right corner of the app, and each release has a matching git tag.
 
+## v0.6
+- Hint now reads "Turn off silent mode to hear the translation". The voice reads what you said to the cat, not the cat talking.
+
 ## v0.5
 - Fixes v0.4 barely picking up meows. v0.4 cut out the low frequencies before checking for sound at all, which removed most of a real voice's energy. Now the full signal is used to detect that you're making a sound, and the filtered signal (with a gentler filter) is used only to find the dips between meows.
 - The mic is now measured directly in the audio stream every ~5ms, not on each screen refresh. Before, the same meows could count differently from one try to the next, especially with Low Power Mode on.

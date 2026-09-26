@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
+<title>eCat Translator</title>
+<style>
+  :root {
+    --pink: #ff4fa3;
+    --pink-soft: rgba(255, 79, 163, 0.35);
+    --text: #f5f5f7;
+    --muted: #8e8e93;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; height: 100%; background: #000; color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Rounded", "Helvetica Neue", sans-serif;
+    overflow: hidden; -webkit-user-select: none; user-select: none;
+  }
+  #app {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column; align-items: center;
+    padding: calc(env(safe-area-inset-top) + 24px) 20px calc(env(safe-area-inset-bottom) + 28px);
+  }
+  header { text-align: center; opacity: .9; }
+  header h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: .5px; }
+  header h1 span { color: var(--pink); }
+
+  #stage {
+    flex: 1; width: 100%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 22px; min-height: 0;
+  }
+  #wave { width: 100%; height: 160px; display: block; }
+
+  #status {
+    font-size: 22px; font-weight: 600; text-align: center; min-height: 30px;
+    transition: opacity .3s;
+  }
+  #status.dim { color: var(--muted); font-weight: 500; }
+
+  #heard {
+    font-size: 26px; font-weight: 700; color: var(--pink); text-align: center;
+    min-height: 34px; max-width: 100%; line-height: 1.3; word-wrap: break-word;
+  }
+  #heard.quote::before { content: "\201C"; }
+  #heard.quote::after { content: "\201D"; }
+
+  #spinner { display: none; width: 88px; height: 88px; animation: spin 1s linear infinite; }
+  #spinner.on { display: block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #result {
+    display: none; text-align: center; max-width: 340px;
+  }
+  #result.on { display: block; animation: pop .45s cubic-bezier(.2,1.4,.4,1); }
+  #result .label { font-size: 13px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+  #result .phrase { font-size: 30px; font-weight: 800; line-height: 1.25; }
+  @keyframes pop { from { transform: scale(.7); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+  footer { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 12px; min-height: 64px; }
+  button {
+    appearance: none; border: 0; border-radius: 999px;
+    font: inherit; font-size: 19px; font-weight: 700;
+    padding: 17px 44px; min-width: 220px;
+    background: var(--pink); color: #fff;
+    box-shadow: 0 0 28px var(--pink-soft);
+    transition: transform .1s, opacity .2s;
+  }
+  button:active { transform: scale(.96); }
+  button.ghost { background: transparent; color: var(--pink); box-shadow: none; border: 2px solid var(--pink); }
+  .hidden { display: none !important; }
+  #hint { font-size: 13px; color: var(--muted); text-align: center; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header><h1>e<span>Cat</span> Translator</h1></header>
+
+  <main id="stage">
+    <canvas id="wave"></canvas>
+    <div id="status" class="dim">Tap below to turn on the mic</div>
+    <div id="heard"></div>
+    <svg id="spinner" viewBox="0 0 100 100" aria-label="Translating">
+      <!-- cat head -->
+      <path d="M18 30 L24 6 L42 22 Q50 20 58 22 L76 6 L82 30 Q90 42 88 58 Q84 86 50 90 Q16 86 12 58 Q10 42 18 30 Z"
+            fill="#ff4fa3"/>
+      <path d="M24 12 L28 26 L36 22 Z M76 12 L72 26 L64 22 Z" fill="#ffc2de"/>
+      <ellipse cx="36" cy="52" rx="6" ry="8" fill="#000"/>
+      <ellipse cx="64" cy="52" rx="6" ry="8" fill="#000"/>
+      <circle cx="38" cy="49" r="2" fill="#fff"/>
+      <circle cx="66" cy="49" r="2" fill="#fff"/>
+      <path d="M46 64 L54 64 L50 69 Z" fill="#000"/>
+      <path d="M50 69 Q46 76 40 73 M50 69 Q54 76 60 73" stroke="#000" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+      <path d="M30 66 L6 62 M30 70 L6 72 M70 66 L94 62 M70 70 L94 72" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+    </svg>
+    <div id="result">
+      <div class="label">In English</div>
+      <div class="phrase" id="phrase"></div>
+    </div>
+  </main>
+
+  <footer>
+    <button id="startBtn">🎤 Turn on mic</button>
+    <button id="translateBtn" class="hidden">Translate</button>
+    <button id="againBtn" class="ghost hidden">Say something else</button>
+    <div id="hint">Turn off silent mode to hear the cat speak</div>
+  </footer>
+</div>
+
+<script>
+(() => {
+  // ---------- Phrase book (keyed by number of meows) ----------
+  const PHRASES = {
+    1: ["Hello.", "Hi.", "Hey, you.", "Sup, human.", "Oh. It's you."],
+    2: ["What's up?", "Feed me.", "Pet me.", "Nice socks.", "Door. Now."],
+    3: ["I like mice.", "Where's my dinner?", "I love you. Barely.", "That's my chair.", "I saw a bird."],
+    4: ["The red dot got away again.", "Your laptop is my bed now.", "I knocked it off on purpose.", "Open the door. No, the other one."],
+    5: ["I would like to file a complaint about the bottom of my food bowl.", "I have been starving for eleven minutes.", "Please clean my litter box. I have standards."],
+    6: ["Your 3 a.m. wake-up call is non-negotiable.", "I have decided the box is better than the gift.", "I did not throw up on the rug. You have no proof."],
+    many: [
+      "Listen carefully. I am the landlord now, and rent is due in tuna.",
+      "Everything the light touches is my kingdom, including your keyboard.",
+      "I have a nine-point plan to catch the red dot and you are not in it.",
+      "My lawyer, Mr. Whiskers, will be in touch about the vacuum cleaner."
+    ]
+  };
+
+  const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+  const phraseFor = n => pick(PHRASES[n] || PHRASES.many);
+
+  // A word for each detected burst, based on how long it lasted
+  function meowWord(ms) {
+    if (ms < 180) return "Mew";
+    if (ms > 900) return "Meeeeow";
+    if (ms > 550) return "Meeow";
+    return "Meow";
+  }
+
+  // ---------- DOM ----------
+  const $ = id => document.getElementById(id);
+  const canvas = $("wave"), ctx = canvas.getContext("2d");
+  const statusEl = $("status"), heardEl = $("heard"), spinner = $("spinner");
+  const resultEl = $("result"), phraseEl = $("phrase"), hintEl = $("hint");
+  const startBtn = $("startBtn"), translateBtn = $("translateBtn"), againBtn = $("againBtn");
+
+  function setStatus(text, dim) {
+    statusEl.textContent = text;
+    statusEl.classList.toggle("dim", !!dim);
+  }
+
+  // ---------- Audio state ----------
+  let audioCtx = null, analyser = null, stream = null, source = null;
+  let timeData = null;
+  let mode = "idle";          // idle | listening | translating | result
+  let meows = [];             // durations (ms) of detected bursts
+  let noiseFloor = 0.01;
+  let inBurst = false, burstStart = 0, aboveSince = 0, belowSince = 0;
+  let level = 0;              // smoothed level for drawing
+
+  const ON_MS = 60;           // loud this long -> burst starts
+  const OFF_MS = 170;         // quiet this long -> burst ends
+  const MIN_BURST_MS = 90;
+
+  async function startMic() {
+    if (!audioCtx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new AC();
+    }
+    if (audioCtx.state !== "running") await audioCtx.resume();
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
+    source = audioCtx.createMediaStreamSource(stream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.3;
+    source.connect(analyser);
+    timeData = new Float32Array(analyser.fftSize);
+  }
+
+  function stopMic() {
+    if (source) { try { source.disconnect(); } catch (e) {} source = null; }
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    analyser = null;
+  }
+
+  function readRms() {
+    if (!analyser) return 0;
+    analyser.getFloatTimeDomainData(timeData);
+    let sum = 0;
+    for (let i = 0; i < timeData.length; i++) sum += timeData[i] * timeData[i];
+    return Math.sqrt(sum / timeData.length);
+  }
+
+  // ---------- Burst (meow) detection ----------
+  function detect(rms, now) {
+    const threshold = Math.max(noiseFloor * 3, 0.02);
+    if (!inBurst) {
+      // Adapt the noise floor slowly while quiet
+      if (rms < threshold) noiseFloor = noiseFloor * 0.98 + rms * 0.02;
+      if (rms > threshold) {
+        if (!aboveSince) aboveSince = now;
+        if (now - aboveSince >= ON_MS) {
+          inBurst = true; burstStart = aboveSince; belowSince = 0;
+          setStatus("listening…");
+        }
+      } else {
+        aboveSince = 0;
+      }
+    } else {
+      // Hysteresis: burst ends once we fall below ~70% of threshold for a while
+      if (rms < threshold * 0.7) {
+        if (!belowSince) belowSince = now;
+        if (now - belowSince >= OFF_MS) {
+          const dur = belowSince - burstStart;
+          inBurst = false; aboveSince = 0;
+          if (dur >= MIN_BURST_MS) addMeow(dur);
+        }
+      } else {
+        belowSince = 0;
+      }
+    }
+  }
+
+  function addMeow(dur) {
+    meows.push(dur);
+    setStatus("listening…");
+    heardEl.classList.remove("quote");
+    heardEl.textContent = formatHeard();
+    translateBtn.classList.remove("hidden");
+  }
+
+  function formatHeard() {
+    return meows.map((d, i) => {
+      const w = meowWord(d);
+      if (i === meows.length - 1) return w;
+      return w + (i % 2 === 1 ? "," : "");
+    }).join(" ");
+  }
+
+  // ---------- Wave drawing ----------
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = canvas.clientWidth * dpr;
+    canvas.height = canvas.clientHeight * dpr;
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  let phase = 0;
+  function draw(now) {
+    const w = canvas.width, h = canvas.height, mid = h / 2;
+    ctx.clearRect(0, 0, w, h);
+
+    const rms = mode === "listening" ? readRms() : 0;
+    if (mode === "listening") detect(rms, now);
+
+    // Smooth level: 0 when still, up to 1 when loud
+    const target = Math.min(1, rms * 9);
+    level += (target - level) * (target > level ? 0.5 : 0.08);
+    phase += 0.06 + level * 0.25;
+
+    const dpr = window.devicePixelRatio || 1;
+    const lines = [
+      { amp: 1.0, freq: 1.0, width: 3, alpha: 1 },
+      { amp: 0.7, freq: 1.6, width: 2, alpha: 0.5 },
+      { amp: 0.45, freq: 2.3, width: 1.5, alpha: 0.3 }
+    ];
+    const idle = mode === "listening" ? 0.04 : 0; // tiny breathing while listening
+    for (const L of lines) {
+      ctx.beginPath();
+      ctx.lineWidth = L.width * dpr;
+      ctx.strokeStyle = `rgba(255, 79, 163, ${L.alpha})`;
+      ctx.shadowColor = "rgba(255, 79, 163, 0.8)";
+      ctx.shadowBlur = (6 + level * 20) * dpr;
+      const amp = (level + idle) * mid * 0.9 * L.amp;
+      for (let x = 0; x <= w; x += 4) {
+        const t = x / w;
+        const envelope = Math.sin(Math.PI * t); // pinch the ends
+        const y = mid + Math.sin(t * Math.PI * 4 * L.freq + phase * L.freq) * amp * envelope * envelope;
+        x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    requestAnimationFrame(draw);
+  }
+  requestAnimationFrame(draw);
+
+  // ---------- Speech ----------
+  function pickVoice() {
+    const voices = speechSynthesis.getVoices();
+    const en = voices.filter(v => /^en/i.test(v.lang));
+    const preferred = ["Samantha", "Karen", "Moira", "Tessa", "Daniel"];
+    for (const name of preferred) {
+      const v = en.find(v => v.name.includes(name));
+      if (v) return v;
+    }
+    return en[0] || null;
+  }
+
+  function speak(text) {
+    if (!("speechSynthesis" in window)) return;
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    const v = pickVoice();
+    if (v) u.voice = v;
+    u.lang = (v && v.lang) || "en-US";
+    u.pitch = 1.5;
+    u.rate = 1.0;
+    speechSynthesis.speak(u);
+  }
+
+  // iOS only lets speech play if it was started from a tap, so we prime it there
+  function unlockSpeech() {
+    if (!("speechSynthesis" in window)) return;
+    const u = new SpeechSynthesisUtterance(" ");
+    u.volume = 0;
+    speechSynthesis.speak(u);
+  }
+
+  // ---------- Flow ----------
+  function beginListening() {
+    meows = [];
+    inBurst = false; aboveSince = 0; belowSince = 0;
+    noiseFloor = 0.01;
+    mode = "listening";
+    heardEl.textContent = "";
+    heardEl.classList.remove("quote");
+    resultEl.classList.remove("on");
+    setStatus("Start talking in Cat", true);
+    translateBtn.classList.add("hidden");
+    againBtn.classList.add("hidden");
+  }
+
+  startBtn.addEventListener("click", async () => {
+    startBtn.disabled = true;
+    try {
+      await startMic();
+      startBtn.classList.add("hidden");
+      beginListening();
+    } catch (err) {
+      console.error(err);
+      startBtn.disabled = false;
+      setStatus(location.protocol === "https:" || location.hostname === "localhost"
+        ? "Mic access was blocked. Allow it in Settings › Safari › Microphone."
+        : "The mic only works on an https:// page.", true);
+    }
+  });
+
+  translateBtn.addEventListener("click", () => {
+    if (mode !== "listening") return;
+    // Count a meow that is still in progress
+    if (inBurst) {
+      const dur = performance.now() - burstStart;
+      if (dur >= MIN_BURST_MS) meows.push(dur);
+      inBurst = false;
+    }
+    if (!meows.length) return;
+    unlockSpeech();
+
+    mode = "translating";
+    // Release the mic so iOS plays the voice through the main speaker
+    stopMic();
+    translateBtn.classList.add("hidden");
+    hintEl.classList.add("hidden");
+    heardEl.textContent = formatHeard();
+    heardEl.classList.add("quote");
+    setStatus("Translating…");
+    spinner.classList.add("on");
+
+    const count = meows.length;
+    setTimeout(() => {
+      spinner.classList.remove("on");
+      mode = "result";
+      const phrase = phraseFor(count);
+      setStatus(`${count} meow${count === 1 ? "" : "s"} detected`, true);
+      phraseEl.textContent = phrase;
+      resultEl.classList.add("on");
+      againBtn.classList.remove("hidden");
+      speak(phrase);
+    }, 1200 + Math.random() * 800);
+  });
+
+  againBtn.addEventListener("click", async () => {
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+    againBtn.disabled = true;
+    try {
+      await startMic();
+      beginListening();
+    } catch (err) {
+      console.error(err);
+      setStatus("Couldn't turn the mic back on. Try reloading.", true);
+    } finally {
+      againBtn.disabled = false;
+    }
+  });
+
+  // Voices load asynchronously on some browsers
+  if ("speechSynthesis" in window) speechSynthesis.onvoiceschanged = () => {};
+})();
+</script>
+</body>
+</html>

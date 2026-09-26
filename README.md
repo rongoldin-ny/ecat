@@ -16,3 +16,6 @@ The iPhone only allows the mic on an `https://` page. The easiest way to get one
 3. Turn off silent mode so you can hear the voice.
 
 Tip: pause briefly between meows, since the pauses are how it counts them.
+
+## Versions
+Each push gets the next version (v0.1, v0.2, …). Update the version shown in `index.html` (`#version`), add an entry to `CHANGELOG.md`, and tag the commit (`git tag v0.X`).

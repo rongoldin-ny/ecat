@@ -78,6 +78,7 @@
   button.ghost { background: transparent; color: var(--pink); box-shadow: none; border: 2px solid var(--pink); }
   .hidden { display: none !important; }
   #debug { font: 11px ui-monospace, Menlo, monospace; color: #0f0; }
+  #version { position: fixed; right: 12px; bottom: calc(env(safe-area-inset-bottom) + 6px); font-size: 11px; color: #48484a; }
   #hint { font-size: 13px; color: var(--muted); text-align: center; }
 </style>
 </head>
@@ -116,6 +117,7 @@
     <div id="hint">Turn off silent mode to hear the cat speak</div>
   </footer>
 </div>
+<div id="version">v0.2</div>
 
 <script src="phrases.js"></script>
 <script>

@@ -73,6 +73,7 @@
   button:active { transform: scale(.96); }
   button.ghost { background: transparent; color: var(--pink); box-shadow: none; border: 2px solid var(--pink); }
   .hidden { display: none !important; }
+  #debug { font: 11px ui-monospace, Menlo, monospace; color: #0f0; }
   #hint { font-size: 13px; color: var(--muted); text-align: center; }
 </style>
 </head>
@@ -107,37 +108,42 @@
     <button id="startBtn">🎤 Turn on mic</button>
     <button id="translateBtn" class="hidden">Translate</button>
     <button id="againBtn" class="ghost hidden">Say something else</button>
+    <div id="debug" class="hidden"></div>
     <div id="hint">Turn off silent mode to hear the cat speak</div>
   </footer>
 </div>
 
+<script src="phrases.js"></script>
 <script>
 (() => {
-  // ---------- Phrase book (keyed by number of meows) ----------
-  const PHRASES = {
-    1: ["Hello.", "Hi.", "Hey, you.", "Sup, human.", "Oh. It's you."],
-    2: ["What's up?", "Feed me.", "Pet me.", "Nice socks.", "Door. Now."],
-    3: ["I like mice.", "Where's my dinner?", "I love you. Barely.", "That's my chair.", "I saw a bird."],
-    4: ["The red dot got away again.", "Your laptop is my bed now.", "I knocked it off on purpose.", "Open the door. No, the other one."],
-    5: ["I would like to file a complaint about the bottom of my food bowl.", "I have been starving for eleven minutes.", "Please clean my litter box. I have standards."],
-    6: ["Your 3 a.m. wake-up call is non-negotiable.", "I have decided the box is better than the gift.", "I did not throw up on the rug. You have no proof."],
-    many: [
-      "Listen carefully. I am the landlord now, and rent is due in tuna.",
-      "Everything the light touches is my kingdom, including your keyboard.",
-      "I have a nine-point plan to catch the red dot and you are not in it.",
-      "My lawyer, Mr. Whiskers, will be in touch about the vacuum cleaner."
-    ]
-  };
+  // ---------- Phrase book ----------
+  // Loaded from phrases.js: CAT_PHRASES[count]["short" | "long"] = [...]
+  const PHRASES = window.CAT_PHRASES || {};
+  const MAX_BUCKET = 6;  // 6 means "6 or more meows"
+  const LONG_MEOW_MS = 550;
 
-  const pick = arr => arr[Math.floor(Math.random() * arr.length)];
-  const phraseFor = n => pick(PHRASES[n] || PHRASES.many);
+  // Shuffle-bag per bucket so phrases don't repeat until all have been used
+  const bags = {};
+  function phraseFor(count, mood) {
+    const n = Math.min(count, MAX_BUCKET);
+    const list = (PHRASES[n] && PHRASES[n][mood]) || (PHRASES[n] && PHRASES[n].short) || ["Meow?"];
+    const key = n + mood;
+    if (!bags[key] || !bags[key].length) {
+      bags[key] = list.slice();
+      for (let i = bags[key].length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [bags[key][i], bags[key][j]] = [bags[key][j], bags[key][i]];
+      }
+    }
+    return bags[key].pop();
+  }
 
-  // A word for each detected burst, based on how long it lasted
+  // A word for each detected burst, stretched to match how long it lasted
   function meowWord(ms) {
-    if (ms < 180) return "Mew";
-    if (ms > 900) return "Meeeeow";
-    if (ms > 550) return "Meeow";
-    return "Meow";
+    if (ms < 160) return "Mew";
+    if (ms < 420) return "Meow";
+    const os = Math.min(8, 2 + Math.floor((ms - 420) / 180));
+    return "Me" + "o".repeat(os) + "w";
   }
 
   // ---------- DOM ----------
@@ -146,6 +152,9 @@
   const statusEl = $("status"), heardEl = $("heard"), spinner = $("spinner");
   const resultEl = $("result"), phraseEl = $("phrase"), hintEl = $("hint");
   const startBtn = $("startBtn"), translateBtn = $("translateBtn"), againBtn = $("againBtn");
+  const debugEl = $("debug");
+  const DEBUG = /[?&]debug/.test(location.search);
+  if (DEBUG) debugEl.classList.remove("hidden");
 
   function setStatus(text, dim) {
     statusEl.textContent = text;
@@ -157,12 +166,20 @@
   let timeData = null;
   let mode = "idle";          // idle | listening | translating | result
   let meows = [];             // durations (ms) of detected bursts
-  let noiseFloor = 0.01;
-  let inBurst = false, burstStart = 0, aboveSince = 0, belowSince = 0;
+  let noiseFloor = 0.005;
   let level = 0;              // smoothed level for drawing
 
-  const ON_MS = 60;           // loud this long -> burst starts
-  const OFF_MS = 170;         // quiet this long -> burst ends
+  // Burst detector state. A "burst" is one syllable-ish chunk of sound.
+  // Meows said back to back never go silent, so a burst also ends when the
+  // level dips well below that burst's own peak (the "m" of the next meow).
+  let inBurst = false, burstStart = 0, burstPeak = 0;
+  let aboveSince = 0, belowSince = 0;
+  let valley = 0, prevPeak = 0, lastEnd = 0;
+
+  const ON_MS = 40;           // loud this long -> burst starts
+  const DIP_MS = 45;          // dipped this long -> burst ends
+  const DIP_RATIO = 0.45;     // dip = below 45% of the burst's peak
+  const RISE_RATIO = 1.8;     // next burst must rise this much above the dip
   const MIN_BURST_MS = 90;
 
   async function startMic() {
@@ -171,13 +188,14 @@
       audioCtx = new AC();
     }
     if (audioCtx.state !== "running") await audioCtx.resume();
+    // Auto-gain and noise suppression flatten the dips between meows, so turn them off
     stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
     });
     source = audioCtx.createMediaStreamSource(stream);
     analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 2048;
-    analyser.smoothingTimeConstant = 0.3;
+    analyser.fftSize = 1024;  // ~21ms window: short enough to see the gaps
+    analyser.smoothingTimeConstant = 0;
     source.connect(analyser);
     timeData = new Float32Array(analyser.fftSize);
   }
@@ -198,32 +216,42 @@
 
   // ---------- Burst (meow) detection ----------
   function detect(rms, now) {
-    const threshold = Math.max(noiseFloor * 3, 0.02);
+    const startThresh = Math.max(noiseFloor * 3, 0.008);
     if (!inBurst) {
-      // Adapt the noise floor slowly while quiet
-      if (rms < threshold) noiseFloor = noiseFloor * 0.98 + rms * 0.02;
-      if (rms > threshold) {
+      if (rms < startThresh) noiseFloor = noiseFloor * 0.97 + rms * 0.03;
+      valley = Math.min(valley, rms);
+      // Straight after a burst, only start a new one on a real rise out of the dip
+      const recent = now - lastEnd < 400;
+      const rising = rms > valley * RISE_RATIO && rms > prevPeak * 0.3;
+      if (rms > startThresh && (!recent || rising)) {
         if (!aboveSince) aboveSince = now;
         if (now - aboveSince >= ON_MS) {
-          inBurst = true; burstStart = aboveSince; belowSince = 0;
+          inBurst = true; burstStart = aboveSince; burstPeak = rms; belowSince = 0;
           setStatus("listening…");
         }
       } else {
         aboveSince = 0;
       }
     } else {
-      // Hysteresis: burst ends once we fall below ~70% of threshold for a while
-      if (rms < threshold * 0.7) {
+      burstPeak = Math.max(burstPeak, rms);
+      const dipLevel = Math.max(burstPeak * DIP_RATIO, startThresh * 0.8);
+      if (rms < dipLevel) {
         if (!belowSince) belowSince = now;
-        if (now - belowSince >= OFF_MS) {
-          const dur = belowSince - burstStart;
-          inBurst = false; aboveSince = 0;
-          if (dur >= MIN_BURST_MS) addMeow(dur);
-        }
+        if (now - belowSince >= DIP_MS) endBurst(belowSince, rms, now);
       } else {
         belowSince = 0;
       }
     }
+    if (DEBUG) {
+      debugEl.textContent = `rms ${rms.toFixed(3)}  floor ${noiseFloor.toFixed(3)}  peak ${burstPeak.toFixed(3)}  ${inBurst ? "BURST" : "-"}  n=${meows.length}`;
+    }
+  }
+
+  function endBurst(endTime, rms, now) {
+    const dur = endTime - burstStart;
+    inBurst = false; aboveSince = 0;
+    valley = rms; prevPeak = burstPeak; lastEnd = now;
+    if (dur >= MIN_BURST_MS) addMeow(dur);
   }
 
   function addMeow(dur) {
@@ -326,7 +354,8 @@
   function beginListening() {
     meows = [];
     inBurst = false; aboveSince = 0; belowSince = 0;
-    noiseFloor = 0.01;
+    valley = 0; prevPeak = 0; lastEnd = 0; burstPeak = 0;
+    noiseFloor = 0.005;
     mode = "listening";
     heardEl.textContent = "";
     heardEl.classList.remove("quote");
@@ -373,10 +402,12 @@
     spinner.classList.add("on");
 
     const count = meows.length;
+    const longCount = meows.filter(d => d >= LONG_MEOW_MS).length;
+    const mood = longCount * 2 >= count ? "long" : "short";
     setTimeout(() => {
       spinner.classList.remove("on");
       mode = "result";
-      const phrase = phraseFor(count);
+      const phrase = phraseFor(count, mood);
       setStatus(`${count} meow${count === 1 ? "" : "s"} detected`, true);
       phraseEl.textContent = phrase;
       resultEl.classList.add("on");

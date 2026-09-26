@@ -141,7 +141,7 @@
     <g class="off"><path d="m16 9 6 6"/><path d="m22 9-6 6"/></g>
   </svg>
 </button>
-<div id="version">v0.3</div>
+<div id="version">v0.4</div>
 
 <script src="phrases.js"></script>
 <script>
@@ -206,10 +206,10 @@
   let aboveSince = 0, belowSince = 0;
   let valley = 0, prevPeak = 0, lastEnd = 0;
 
-  const ON_MS = 40;           // loud this long -> burst starts
-  const DIP_MS = 45;          // dipped this long -> burst ends
-  const DIP_RATIO = 0.45;     // dip = below 45% of the burst's peak
-  const RISE_RATIO = 1.8;     // next burst must rise this much above the dip
+  const ON_MS = 35;           // loud this long -> burst starts
+  const DIP_MS = 35;          // dipped this long -> burst ends
+  const DIP_RATIO = 0.5;      // dip = below 50% of the burst's peak
+  const RISE_RATIO = 1.7;     // next burst must rise this much above the dip
   const MIN_BURST_MS = 90;
 
   async function startMic() {
@@ -223,10 +223,16 @@
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
     });
     source = audioCtx.createMediaStreamSource(stream);
+    // The "m" between meows is a low hum that keeps overall loudness up.
+    // Cutting the lows (two stacked high-pass filters) turns each "m" into a clear dip.
+    const hp1 = audioCtx.createBiquadFilter();
+    hp1.type = "highpass"; hp1.frequency.value = 500; hp1.Q.value = 0.7;
+    const hp2 = audioCtx.createBiquadFilter();
+    hp2.type = "highpass"; hp2.frequency.value = 500; hp2.Q.value = 0.7;
     analyser = audioCtx.createAnalyser();
     analyser.fftSize = 1024;  // ~21ms window: short enough to see the gaps
     analyser.smoothingTimeConstant = 0;
-    source.connect(analyser);
+    source.connect(hp1); hp1.connect(hp2); hp2.connect(analyser);
     timeData = new Float32Array(analyser.fftSize);
   }
 
@@ -246,7 +252,7 @@
 
   // ---------- Burst (meow) detection ----------
   function detect(rms, now) {
-    const startThresh = Math.max(noiseFloor * 3, 0.008);
+    const startThresh = Math.max(noiseFloor * 3, 0.005);
     if (!inBurst) {
       if (rms < startThresh) noiseFloor = noiseFloor * 0.97 + rms * 0.03;
       valley = Math.min(valley, rms);
@@ -273,7 +279,7 @@
       }
     }
     if (DEBUG) {
-      debugEl.textContent = `rms ${rms.toFixed(3)}  floor ${noiseFloor.toFixed(3)}  peak ${burstPeak.toFixed(3)}  ${inBurst ? "BURST" : "-"}  n=${meows.length}`;
+      debugEl.textContent = `rms ${rms.toFixed(3)}  floor ${noiseFloor.toFixed(3)}  peak ${burstPeak.toFixed(3)}  ${inBurst ? "BURST" : "-"}  n=${meows.length}  voice: ${debugEl.dataset.voice || "?"}`;
     }
   }
 
@@ -350,45 +356,47 @@
   requestAnimationFrame(draw);
 
   // ---------- Speech ----------
-  function pickVoice() {
-    const voices = speechSynthesis.getVoices();
-    const en = voices.filter(v => /^en/i.test(v.lang));
-    const preferred = ["Samantha", "Karen", "Moira", "Tessa", "Daniel"];
-    for (const name of preferred) {
-      const v = en.find(v => v.name.includes(name));
-      if (v) return v;
-    }
-    return en[0] || null;
+  // Pick the most natural-sounding English voice the phone has.
+  // iPhones ship "compact" voices (robotic); "Enhanced"/"Premium" ones sound human
+  // and can be downloaded in Settings > Accessibility > Spoken Content > Voices.
+  let voice = null;
+  function scoreVoice(v) {
+    let s = 0;
+    if (/premium/i.test(v.name)) s += 100;
+    else if (/enhanced|neural|natural/i.test(v.name)) s += 60;
+    if (/^en[-_]US/i.test(v.lang)) s += 10;
+    else if (/^en[-_](GB|AU|IE|CA)/i.test(v.lang)) s += 6;
+    const natural = ["Ava", "Zoe", "Allison", "Susan", "Evan", "Nathan", "Joelle", "Noelle", "Serena", "Samantha", "Karen", "Daniel", "Google US English"];
+    const i = natural.findIndex(n => v.name.startsWith(n));
+    if (i >= 0) s += 20 - i;
+    // Novelty voices (Bells, Bubbles, Zarvox...) and Eloquence voices sound robotic
+    if (/bells|boing|bubbles|cellos|zarvox|trinoids|whisper|wobble|bahh|albert|jester|organ|superstar|ralph|junior|fred|kathy|good news|bad news|eddy|flo|grandma|grandpa|reed|rocko|sandy|shelley/i.test(v.name)) s -= 200;
+    return s;
+  }
+  function loadVoice() {
+    if (!("speechSynthesis" in window)) return;
+    const en = speechSynthesis.getVoices().filter(v => /^en/i.test(v.lang));
+    en.sort((a, b) => scoreVoice(b) - scoreVoice(a));
+    voice = en[0] || null;
+    if (DEBUG && voice) debugEl.dataset.voice = voice.name;
   }
 
-  // ---------- Mute ----------
-  const muteBtn = $("muteBtn");
-  let muted = false;
-  try { muted = localStorage.getItem("ecat-muted") === "1"; } catch (e) {}
-  function applyMute() {
-    muteBtn.classList.toggle("muted", muted);
-    muteBtn.setAttribute("aria-pressed", String(muted));
-    muteBtn.setAttribute("aria-label", muted ? "Unmute voice" : "Mute voice");
-    hintEl.style.visibility = muted ? "hidden" : "";
+  // Tidy text for speaking: "Pleeease" -> "Please", "NO" -> "no" (caps can get spelled out)
+  function speakable(text) {
+    return text
+      .replace(/([a-z])\1{2,}/gi, "$1")
+      .replace(/\b[A-Z]{2,}\b/g, w => w.toLowerCase());
   }
-  muteBtn.addEventListener("click", () => {
-    muted = !muted;
-    try { localStorage.setItem("ecat-muted", muted ? "1" : "0"); } catch (e) {}
-    if (muted && "speechSynthesis" in window) speechSynthesis.cancel();
-    applyMute();
-  });
-  applyMute();
 
   function speak(text) {
     if (muted) return;
     if (!("speechSynthesis" in window)) return;
     speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    const v = pickVoice();
-    if (v) u.voice = v;
-    u.lang = (v && v.lang) || "en-US";
-    u.pitch = 1.5;
-    u.rate = 1.0;
+    if (!voice) loadVoice();
+    const u = new SpeechSynthesisUtterance(speakable(text));
+    if (voice) { u.voice = voice; u.lang = voice.lang; } else { u.lang = "en-US"; }
+    u.pitch = 1.05;
+    u.rate = 0.95;
     speechSynthesis.speak(u);
   }
 
@@ -486,7 +494,10 @@
   });
 
   // Voices load asynchronously on some browsers
-  if ("speechSynthesis" in window) speechSynthesis.onvoiceschanged = () => {};
+  if ("speechSynthesis" in window) {
+    loadVoice();
+    speechSynthesis.onvoiceschanged = loadVoice;
+  }
 })();
 </script>
 </body>

@@ -3,9 +3,9 @@
 A prototype that turns human "meows" into English. It is one file, `index.html`, and is built for iPhone Safari.
 
 ## How it works
-- The app counts bursts of sound instead of recognising words. A new meow starts at the drop in volume on its "m", so meows said back to back still count separately.
+- The app counts bursts of sound instead of recognising words. It filters out low frequencies, so the humming "m" at the start of each meow shows up as a dip. That way meows said back to back still count separately.
 - Each meow is written out according to how long it lasted: "Mew", "Meow", "Meooow" and so on.
-- The number of meows picks a phrase from `phrases.js`. If at least half the meows were long, the phrase comes from a more dramatic list. The phone's built-in voice reads it aloud.
+- The number of meows picks a phrase from `phrases.js`: what the person was saying to their cat. If at least half the meows were long, the phrase comes from a more dramatic list. The phone's built-in voice reads it aloud.
 - `phrases.js` has 110 normal and 110 dramatic phrases for each count (1 to 6, where 6 means 6 or more). A phrase doesn't repeat until all the others in its list have been used.
 - Add `?debug` to the URL to see live sound levels, which helps when tuning the detector on a phone.
 
@@ -19,3 +19,6 @@ Tip: pause briefly between meows, since the pauses are how it counts them.
 
 ## Versions
 Each push gets the next version (v0.1, v0.2, …). Update the version shown in `index.html` (`#version`), add an entry to `CHANGELOG.md`, and tag the commit (`git tag v0.X`).
+
+## Making the voice sound natural
+The app uses the best English voice installed on the phone. iPhones come with basic "compact" voices, which sound robotic. For a much more human voice, go to **Settings → Accessibility → Spoken Content → Voices → English**, download **Ava (Premium)** or **Zoe (Premium)**, and then reload the app.
